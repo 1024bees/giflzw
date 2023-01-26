@@ -1,0 +1,15 @@
+[package]
+name = "giflzw"
+description = "No-std lzw decoder designed specifically for gifs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+smallvec = "1.10.0"
+
+
+[dev-dependencies]
+weezl = "0.1.7"
+

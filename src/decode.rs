@@ -48,19 +48,6 @@ struct CodeBuffer {
     bits: u8,
 }
 
-struct DecodeIter<'state, 'stream> {
-    decode_state: &'state DecodeState,
-    byte_stream: &'stream [u8],
-    status: Result<LzwStatus, LzwError>,
-}
-
-impl<'state, 'stream> Iterator for DecodeIter<'state, 'stream> {
-    type Item = u8;
-    fn next(&mut self) -> Option<Self::Item> {
-        Some(0)
-    }
-}
-
 struct DecodeState {
     /// The original minimum code size.
     min_size: u8,
@@ -88,13 +75,12 @@ struct DecodeState {
 
 struct Buffer {
     bytes: SmallVec<[u8; 4096]>,
-    read_mark: usize,
     most_recent_byte: u8,
 }
 
 struct Table {
     inner: SmallVec<[Link; 4096]>,
-    min_size: u8,
+    //min_size: u8,
 }
 
 impl Decoder {
@@ -248,13 +234,13 @@ impl DecodeState {
                             if self.implicit_reset {
                                 self.init_tables();
 
-                                let written = self.buffer.fill_reconstruct_and_transform(
+                                out = self.buffer.fill_reconstruct_and_transform(
                                     &self.table,
                                     init_code,
                                     transformer,
                                     out,
                                 );
-                                out = &mut out[written as usize..];
+
                                 let link = self.table.at(init_code).clone();
                                 code_link = Some((init_code, link));
                             } else {
@@ -263,30 +249,44 @@ impl DecodeState {
                             }
                         } else {
                             // Reconstruct the first code in the buffer.
-                            self.buffer.fill_reconstruct(&self.table, init_code);
+
                             let link = self.table.at(init_code).clone();
 
-                            let written = self.buffer.fill_reconstruct_and_transform(
+                            out = self.buffer.fill_reconstruct_and_transform(
                                 &self.table,
                                 init_code,
                                 transformer,
                                 out,
                             );
-                            out = &mut out[written as usize..];
 
                             code_link = Some((init_code, link));
                         }
                     }
                 }
             }
+
             // Move the tracking state to the stack.
             Some(tup) => code_link = Some(tup),
         };
 
-        while let Some(code) = self.code_buffer.next_symbol(&mut inp) {
-            let (mut code, mut link) = code_link.take().unwrap();
+        if !self.buffer.bytes.is_empty() {
+            let written = self.buffer.drain_buffer_and_transform(out, transformer);
+            out = &mut out[written as usize..];
+            if out.is_empty() {
+                return BufferResult {
+                    consumed_in: start_in_size - inp.len(),
+                    consumed_out: start_out_size - out.len(),
+                    status,
+                };
+            }
+        }
+
+        while let Some(next_code) = self.code_buffer.next_symbol(&mut inp) {
+            let (prev_code, link) = code_link.take().unwrap();
             // Reconstruct the first code in the buffer.
-            let link = self.table.derive(&link, self.buffer.most_recent_byte, code);
+            let link = self
+                .table
+                .derive(&link, self.buffer.most_recent_byte, prev_code);
             self.next_code += 1;
             if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
                 && self.code_buffer.code_size() < MAX_CODESIZE
@@ -294,118 +294,44 @@ impl DecodeState {
                 self.bump_code_size();
             }
 
-            self.buffer.fill_reconstruct(&self.table, code);
+            match next_code {
+                endcode if endcode == self.end_code => {
+                    self.has_ended = true;
+                    status = Ok(LzwStatus::Done);
+                    break;
+                }
+                resetcode if resetcode == self.clear_code => {
+                    self.reset_tables();
+                    break;
+                }
+                _ => {
+                    out = self.buffer.fill_reconstruct_and_transform(
+                        &self.table,
+                        next_code,
+                        transformer,
+                        out,
+                    );
 
-            let written =
-                self.buffer
-                    .fill_reconstruct_and_transform(&self.table, code, transformer, out);
-            out = &mut out[written as usize..];
-            code_link = Some((code, link));
+                    code_link = Some((next_code, link));
+                }
+            }
+
+            if out.is_empty() {
+                break;
+            }
         }
 
+        self.last = code_link;
+
         return BufferResult {
-            consumed_in: 0,
-            consumed_out: 0,
-            status: Ok(LzwStatus::Done),
+            consumed_in: start_in_size - inp.len(),
+            consumed_out: start_out_size - out.len(),
+            status,
         };
     }
 
-    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> BufferResult {
-        // Rough description:
-        // We will fill the output slice as much as possible until either there is no more symbols
-        // to decode or an end code has been reached. This requires an internal buffer to hold a
-        // potential tail of the word corresponding to the last symbol. This tail will then be
-        // decoded first before continuing with the regular decoding. The same buffer is required
-        // to persist some symbol state across calls.
-        //
-        // We store the words corresponding to code symbols in an index chain, bytewise, where we
-        // push each decoded symbol. (TODO: wuffs shows some success with 8-byte units). This chain
-        // is traversed for each symbol when it is decoded and bytes are placed directly into the
-        // output slice. In the special case (new_code == next_code) we use an existing decoded
-        // version that is present in either the out bytes of this call or in buffer to copy the
-        // repeated prefix slice.
-        // TODO: I played with a 'decoding cache' to remember the position of long symbols and
-        // avoid traversing the chain, doing a copy of memory instead. It did however not lead to
-        // a serious improvement. It's just unlikely to both have a long symbol and have that
-        // repeated twice in the same output buffer.
-        //
-        // You will also find the (to my knowledge novel) concept of a _decoding burst_ which
-        // gained some >~10% speedup in tests. This is motivated by wanting to use out-of-order
-        // execution as much as possible and for this reason have the least possible stress on
-        // branch prediction. Our decoding table already gives us a lookahead on symbol lengths but
-        // only for re-used codes, not novel ones. This lookahead also makes the loop termination
-        // when restoring each byte of the code word perfectly predictable! So a burst is a chunk
-        // of code words which are all independent of each other, have known lengths _and_ are
-        // guaranteed to fit into the out slice without requiring a buffer. One burst can be
-        // decoded in an extremely tight loop.
-        //
-        // TODO: since words can be at most (1 << MAX_CODESIZE) = 4096 bytes long we could avoid
-        // that intermediate buffer at the expense of not always filling the output buffer
-        // completely. Alternatively we might follow its chain of precursor states twice. This may
-        // be even cheaper if we store more than one byte per link so it really should be
-        // evaluated.
-        // TODO: if the caller was required to provide the previous last word we could also avoid
-        // the buffer for cases where we need it to restore the next code! This could be built
-        // backwards compatible by only doing it after an opt-in call that enables the behaviour.
-
-        // Record initial lengths for the result that is returned.
-        let o_in = inp.len();
-        let o_out = out.len();
-
-        // The code_link is the previously decoded symbol.
-        // It's used to link the new code back to its predecessor.
-        let mut code_link = None;
-        // The status, which is written to on an invalid code.
-        let mut status = Ok(LzwStatus::Ok);
-
-        match self.last.take() {
-            // No last state? This is the first code after a reset?
-            None => {
-                match self.next_symbol(&mut inp) {
-                    // Plainly invalid code.
-                    Some(code) if code > self.next_code => status = Err(LzwError::InvalidCode),
-                    // next_code would require an actual predecessor.
-                    Some(code) if code == self.next_code => status = Err(LzwError::InvalidCode),
-                    // No more symbols available and nothing decoded yet.
-                    // Assume that we didn't make progress, this may get reset to Done if we read
-                    // some bytes from the input.
-                    None => status = Ok(LzwStatus::NoProgress),
-                    // Handle a valid code.
-                    Some(init_code) => {
-                        if init_code == self.clear_code {
-                            self.init_tables();
-                        } else if init_code == self.end_code {
-                            self.has_ended = true;
-                            status = Ok(LzwStatus::Done);
-                        } else if self.table.is_empty() {
-                            if self.implicit_reset {
-                                self.init_tables();
-
-                                self.buffer.fill_reconstruct(&self.table, init_code);
-                                let link = self.table.at(init_code).clone();
-                                code_link = Some((init_code, link));
-                            } else {
-                                // We require an explicit reset.
-                                status = Err(LzwError::InvalidCode);
-                            }
-                        } else {
-                            // Reconstruct the first code in the buffer.
-                            self.buffer.fill_reconstruct(&self.table, init_code);
-                            let link = self.table.at(init_code).clone();
-                            code_link = Some((init_code, link));
-                        }
-                    }
-                }
-            }
-            // Move the tracking state to the stack.
-            Some(tup) => code_link = Some(tup),
-        };
-
-        return BufferResult {
-            consumed_in: 0,
-            consumed_out: 0,
-            status: Ok(LzwStatus::Done),
-        };
+    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
+        self.advance_and_transform(inp, out, |val| val)
     }
 }
 
@@ -416,14 +342,6 @@ impl DecodeState {
 
     fn bump_code_size(&mut self) {
         self.code_buffer.bump_code_size()
-    }
-
-    fn refill_bits(&mut self, inp: &mut &[u8]) {
-        self.code_buffer.refill_bits(inp)
-    }
-
-    fn get_bits(&mut self) -> Option<Code> {
-        self.code_buffer.get_bits()
     }
 }
 
@@ -500,16 +418,12 @@ impl Buffer {
     fn new() -> Self {
         Buffer {
             bytes: SmallVec::new(),
-            read_mark: 0,
+
             most_recent_byte: 0,
         }
     }
 
     // Fill the buffer by decoding from the table
-    fn fill_reconstruct(&mut self, table: &Table, code: Code) -> u8 {
-        panic!()
-    }
-
     fn drain_buffer_and_transform<T>(
         &mut self,
         writer_buffer: &mut [T],
@@ -526,22 +440,22 @@ impl Buffer {
         num_elems as u16
     }
 
-    fn fill_reconstruct_and_transform<T>(
+    fn fill_reconstruct_and_transform<'outslice, T>(
         &mut self,
         table: &Table,
         code: Code,
         transformer: impl Fn(u8) -> T,
-        writer_buffer: &mut [T],
-    ) -> u16 {
+        writer_buffer: &'outslice mut [T],
+    ) -> &'outslice mut [T] {
         let first_link = table.at(code);
         if first_link.depth == u8::MAX || first_link.depth > writer_buffer.len() as u8 {
             self.most_recent_byte = table.buffered_reconstruct(code, &mut self.bytes);
-            return self.drain_buffer_and_transform(writer_buffer, transformer);
+            let drained = self.drain_buffer_and_transform(writer_buffer, transformer) as usize;
+            return &mut writer_buffer[drained..];
         } else {
             let mut code_iter = code;
             let table = &table.inner[..=usize::from(code)];
             let mut idx = first_link.depth - 1;
-            let len = code_iter;
 
             let mut entry = &table[usize::from(code_iter)];
             while code_iter != 0 {
@@ -555,24 +469,15 @@ impl Buffer {
                 idx -= 1;
             }
             self.most_recent_byte = entry.byte;
-            first_link.depth as u16
+            return &mut writer_buffer[first_link.depth as usize..];
         }
-    }
-
-    fn buffer(&self) -> &[u8] {
-        &self.bytes[self.read_mark..]
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.read_mark += amt;
     }
 }
 
 impl Table {
-    fn new(min_size: u8) -> Self {
+    fn new(_min_size: u8) -> Self {
         Table {
             inner: SmallVec::with_capacity(MAX_ENTRIES),
-            min_size,
         }
     }
 
@@ -606,10 +511,6 @@ impl Table {
 
     fn is_empty(&self) -> bool {
         self.inner.is_empty()
-    }
-
-    fn is_full(&self) -> bool {
-        self.inner.len() >= MAX_ENTRIES
     }
 
     fn buffered_reconstruct(&self, code: Code, out: &mut SmallVec<[u8; 4096]>) -> u8 {
@@ -648,4 +549,25 @@ impl Link {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+
+    use super::Decoder;
+    use weezl::encode::Encoder;
+    use weezl::BitOrder;
+
+    fn make_decoded() -> Vec<u8> {
+        const FILE: &'static [u8] =
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
+        return Vec::from(FILE);
+    }
+
+    #[test]
+    fn darlin_test() {
+        let mut encoder = Encoder::new(BitOrder::Lsb, 8);
+        let encoded: Vec<u8> = "HELLO MY DARLIN HELLO MY RAGTIME GAL".into();
+        let out_data = encoder.encode(&encoded).unwrap();
+        let mut array_vec = vec![0; encoded.len()];
+        let mut decoder = Decoder::new(8);
+        let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);
+    }
+}

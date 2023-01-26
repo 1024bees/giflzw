@@ -225,29 +225,24 @@ impl DecodeState {
                     None => status = Ok(LzwStatus::NoProgress),
                     // Handle a valid code.
                     Some(init_code) => {
+                        let mut init_tables = false;
                         if init_code == self.clear_code {
                             self.init_tables();
+                            init_tables = true;
                         } else if init_code == self.end_code {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
                         } else if self.table.is_empty() {
                             if self.implicit_reset {
                                 self.init_tables();
-
-                                out = self.buffer.fill_reconstruct_and_transform(
-                                    &self.table,
-                                    init_code,
-                                    transformer,
-                                    out,
-                                );
-
-                                let link = self.table.at(init_code).clone();
-                                code_link = Some((init_code, link));
+                                init_tables = true;
                             } else {
                                 // We require an explicit reset.
                                 status = Err(LzwError::InvalidCode);
                             }
-                        } else {
+                        }
+
+                        if init_tables {
                             // Reconstruct the first code in the buffer.
 
                             let link = self.table.at(init_code).clone();
@@ -552,6 +547,7 @@ impl Link {
 mod tests {
 
     use super::Decoder;
+    use weezl::decode::Decoder as WzlDecoder;
     use weezl::encode::Encoder;
     use weezl::BitOrder;
 
@@ -564,8 +560,10 @@ mod tests {
     #[test]
     fn darlin_test() {
         let mut encoder = Encoder::new(BitOrder::Lsb, 8);
+        let mut base_decoder = WzlDecoder::new(BitOrder::Lsb, 8);
         let encoded: Vec<u8> = "HELLO MY DARLIN HELLO MY RAGTIME GAL".into();
         let out_data = encoder.encode(&encoded).unwrap();
+        let value = base_decoder.decode(&out_data).unwrap();
         let mut array_vec = vec![0; encoded.len()];
         let mut decoder = Decoder::new(8);
         let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);

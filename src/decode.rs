@@ -246,15 +246,20 @@ impl DecodeState {
                             // Reconstruct the first code in the buffer.
 
                             let link = self.table.at(init_code).clone();
+                            let first_symbol = if init_code == self.clear_code {
+                                self.next_symbol(&mut inp).unwrap()
+                            } else {
+                                init_code
+                            };
 
                             out = self.buffer.fill_reconstruct_and_transform(
                                 &self.table,
-                                init_code,
+                                first_symbol,
                                 transformer,
                                 out,
                             );
 
-                            code_link = Some((init_code, link));
+                            code_link = Some((first_symbol, link));
                         }
                     }
                 }
@@ -461,7 +466,7 @@ impl Buffer {
                 entry = &table[usize::from(code_iter)];
                 code_iter = entry.prev;
                 writer_buffer[idx as usize] = transformer(entry.byte);
-                idx -= 1;
+                idx = idx.saturating_sub(1);
             }
             self.most_recent_byte = entry.byte;
             return &mut writer_buffer[first_link.depth as usize..];
@@ -547,6 +552,7 @@ impl Link {
 mod tests {
 
     use super::Decoder;
+    use super::LzwStatus;
     use weezl::decode::Decoder as WzlDecoder;
     use weezl::encode::Encoder;
     use weezl::BitOrder;
@@ -567,5 +573,9 @@ mod tests {
         let mut array_vec = vec![0; encoded.len()];
         let mut decoder = Decoder::new(8);
         let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);
+        let status = result.status.unwrap();
+        assert_eq!(encoded, array_vec);
+        assert_eq!(result.consumed_out, array_vec.len());
+        assert_eq!(status, LzwStatus::Done);
     }
 }

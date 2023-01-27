@@ -10,7 +10,7 @@ pub struct BufferResult {
 }
 
 /// The status after successful coding of an LZW stream.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LzwStatus {
     /// Everything went well.
     Ok,

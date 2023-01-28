@@ -55,8 +55,8 @@ struct DecodeState {
     table: Table,
     /// The buffer of decoded data.
     buffer: Buffer,
-    /// The link which we are still decoding and its original code.
-    last: Option<(Code, Link)>,
+    /// The last code we've seen
+    last: Option<Code>,
     /// The next code entry.
     next_code: Code,
     /// Code to reset all tables.
@@ -207,7 +207,7 @@ impl DecodeState {
         //
         //
         let mut status = Ok(LzwStatus::Ok);
-        let mut code_link = None;
+        let mut code = None;
         let start_out_size = out.len();
         let start_in_size = out.len();
 
@@ -245,7 +245,6 @@ impl DecodeState {
                         if init_tables {
                             // Reconstruct the first code in the buffer.
 
-                            let link = self.table.at(init_code).clone();
                             let first_symbol = if init_code == self.clear_code {
                                 self.next_symbol(&mut inp).unwrap()
                             } else {
@@ -259,14 +258,14 @@ impl DecodeState {
                                 out,
                             );
 
-                            code_link = Some((first_symbol, link));
+                            code = Some(first_symbol);
                         }
                     }
                 }
             }
 
             // Move the tracking state to the stack.
-            Some(tup) => code_link = Some(tup),
+            Some(tup) => code = Some(tup),
         };
 
         if !self.buffer.bytes.is_empty() {
@@ -282,17 +281,8 @@ impl DecodeState {
         }
 
         while let Some(next_code) = self.code_buffer.next_symbol(&mut inp) {
-            let (prev_code, link) = code_link.take().unwrap();
+            let prev_code = code.take().unwrap();
             // Reconstruct the first code in the buffer.
-            let link = self
-                .table
-                .derive(&link, self.buffer.most_recent_byte, prev_code);
-            self.next_code += 1;
-            if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
-                && self.code_buffer.code_size() < MAX_CODESIZE
-            {
-                self.bump_code_size();
-            }
 
             match next_code {
                 endcode if endcode == self.end_code => {
@@ -304,15 +294,39 @@ impl DecodeState {
                     self.reset_tables();
                     break;
                 }
-                _ => {
-                    out = self.buffer.fill_reconstruct_and_transform(
-                        &self.table,
-                        next_code,
-                        transformer,
-                        out,
-                    );
+                seen_code => {
+                    if seen_code < self.next_code {
+                        out = self.buffer.fill_reconstruct_and_transform(
+                            &self.table,
+                            next_code,
+                            transformer,
+                            out,
+                        );
 
-                    code_link = Some((next_code, link));
+                        self.table.derive(self.buffer.most_recent_byte, prev_code);
+                        self.next_code += 1;
+                    } else if seen_code == self.next_code {
+                        self.table.derive(self.buffer.most_recent_byte, prev_code);
+
+                        out = self.buffer.fill_reconstruct_and_transform(
+                            &self.table,
+                            next_code,
+                            transformer,
+                            out,
+                        );
+
+                        self.next_code += 1;
+                    } else {
+                        todo!("Invalid code; TODO; handle this elegantly");
+                    }
+
+                    if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
+                        && self.code_buffer.code_size() < MAX_CODESIZE
+                    {
+                        self.bump_code_size();
+                    }
+
+                    code = Some(next_code);
                 }
             }
 
@@ -321,7 +335,7 @@ impl DecodeState {
             }
         }
 
-        self.last = code_link;
+        self.last = code;
 
         return BufferResult {
             consumed_in: start_in_size - inp.len(),
@@ -458,6 +472,7 @@ impl Buffer {
             let mut idx = first_link.depth - 1;
 
             let mut entry = &table[usize::from(code_iter)];
+
             while code_iter != 0 {
                 //(code, cha) = self.table[k as usize];
                 // Note: This could possibly be replaced with an unchecked array access if
@@ -465,6 +480,7 @@ impl Buffer {
                 //  - min_size is asserted to be < MAX_CODESIZE
                 entry = &table[usize::from(code_iter)];
                 code_iter = entry.prev;
+
                 writer_buffer[idx as usize] = transformer(entry.byte);
                 idx = idx.saturating_sub(1);
             }
@@ -481,7 +497,8 @@ impl Table {
         }
     }
 
-    fn derive(&mut self, from: &Link, byte: u8, prev: Code) -> Link {
+    fn derive(&mut self, byte: u8, prev: Code) -> Link {
+        let from = self.at(prev);
         let link = from.derive(byte, prev);
         self.inner.push(link.clone());
         link
@@ -553,29 +570,66 @@ mod tests {
 
     use super::Decoder;
     use super::LzwStatus;
+
     use weezl::decode::Decoder as WzlDecoder;
     use weezl::encode::Encoder;
     use weezl::BitOrder;
 
-    fn make_decoded() -> Vec<u8> {
-        const FILE: &'static [u8] =
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
-        return Vec::from(FILE);
+    fn bmp_data_to_vec() -> Vec<u8> {
+        use embedded_graphics::pixelcolor::*;
+        use tinybmp::Bmp;
+
+        const EYES: &'static [u8] =
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/test/eyes.bmp"));
+        let bmp = Bmp::<Rgb888>::from_slice(EYES).unwrap();
+        bmp.pixels()
+            .into_iter()
+            .map(|pixel| {
+                let color = pixel.1;
+                [color.r(), color.g(), color.b()]
+            })
+            .map(|val| val.into_iter())
+            .flatten()
+            .collect()
+    }
+
+    fn test_body(encoded: Vec<u8>) {
+        let mut encoder = Encoder::new(BitOrder::Lsb, 8);
+        let out_data = encoder.encode(&encoded).unwrap();
+
+        //decode the data using weezl decoder, for sanity's sake
+        let mut base_decoder = WzlDecoder::new(BitOrder::Lsb, 8);
+        let value = base_decoder.decode(&out_data).unwrap();
+
+        let mut array_vec = vec![5; encoded.len() + 1];
+        let mut decoder = Decoder::new(8);
+        let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);
+        let status = result.status.unwrap();
+
+        assert_eq!(status, LzwStatus::Done);
+        assert_eq!(result.consumed_out, encoded.len());
+        assert_eq!(value, array_vec[0..result.consumed_out]);
     }
 
     #[test]
     fn darlin_test() {
-        let mut encoder = Encoder::new(BitOrder::Lsb, 8);
-        let mut base_decoder = WzlDecoder::new(BitOrder::Lsb, 8);
         let encoded: Vec<u8> = "HELLO MY DARLIN HELLO MY RAGTIME GAL".into();
-        let out_data = encoder.encode(&encoded).unwrap();
-        let value = base_decoder.decode(&out_data).unwrap();
-        let mut array_vec = vec![0; encoded.len()];
-        let mut decoder = Decoder::new(8);
-        let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);
-        let status = result.status.unwrap();
-        assert_eq!(encoded, array_vec);
-        assert_eq!(result.consumed_out, array_vec.len());
-        assert_eq!(status, LzwStatus::Done);
+        test_body(encoded);
+    }
+
+    #[test]
+    fn repeating_test() {
+        //create data
+        let encoded: Vec<u8> = "AAAAAAAAAAAA".into();
+        test_body(encoded);
+    }
+
+    #[test]
+    fn bmp_test() {
+        //create data
+        let encoded: Vec<u8> = bmp_data_to_vec();
+        let len = encoded.len();
+        println!("encoded len Is {len}");
+        test_body(encoded);
     }
 }

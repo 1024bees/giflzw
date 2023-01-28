@@ -12,4 +12,5 @@ smallvec = "1.10.0"
 
 [dev-dependencies]
 weezl = "0.1.7"
-
+tinybmp = "0.3.3"
+embedded-graphics = "0.7"

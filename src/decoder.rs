@@ -209,7 +209,7 @@ impl DecodeState {
         let mut status = Ok(LzwStatus::Ok);
         let mut code = None;
         let start_out_size = out.len();
-        let start_in_size = out.len();
+        let start_in_size = inp.len();
 
         match self.last.take() {
             // No last state? This is the first code after a reset?
@@ -292,7 +292,16 @@ impl DecodeState {
                 }
                 resetcode if resetcode == self.clear_code => {
                     self.reset_tables();
-                    break;
+
+                    let first_symbol = self.code_buffer.next_symbol(&mut inp).unwrap();
+                    out = self.buffer.fill_reconstruct_and_transform(
+                        &self.table,
+                        first_symbol,
+                        transformer,
+                        out,
+                    );
+
+                    code = Some(first_symbol);
                 }
                 seen_code => {
                     if seen_code < self.next_code {
@@ -320,7 +329,7 @@ impl DecodeState {
                         todo!("Invalid code; TODO; handle this elegantly");
                     }
 
-                    if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
+                    if self.next_code > (self.code_buffer.max_code()) - Code::from(self.is_tiff)
                         && self.code_buffer.code_size() < MAX_CODESIZE
                     {
                         self.bump_code_size();
@@ -379,7 +388,9 @@ impl CodeBuffer {
             self.refill_bits(inp);
         }
 
-        self.get_bits()
+        let symbol = self.get_bits();
+
+        symbol
     }
 
     fn bump_code_size(&mut self) {
@@ -462,9 +473,11 @@ impl Buffer {
         writer_buffer: &'outslice mut [T],
     ) -> &'outslice mut [T] {
         let first_link = table.at(code);
-        if first_link.depth == u8::MAX || first_link.depth > writer_buffer.len() as u8 {
+        if first_link.depth == u8::MAX || first_link.depth as usize > writer_buffer.len() {
+            println!("writter_buffer len is {}", writer_buffer.len());
             self.most_recent_byte = table.buffered_reconstruct(code, &mut self.bytes);
             let drained = self.drain_buffer_and_transform(writer_buffer, transformer) as usize;
+            println!("DRAINING {drained} elements!");
             return &mut writer_buffer[drained..];
         } else {
             let mut code_iter = code;
@@ -500,6 +513,14 @@ impl Table {
     fn derive(&mut self, byte: u8, prev: Code) -> Link {
         let from = self.at(prev);
         let link = from.derive(byte, prev);
+
+        let new_depth = link.depth;
+        let new_code = self.inner.len();
+        //println!("create new depth of {new_depth} for code {new_code}");
+
+        if self.inner.len() == 619 {
+            println!("break");
+        }
         self.inner.push(link.clone());
         link
     }
@@ -533,17 +554,22 @@ impl Table {
     fn buffered_reconstruct(&self, code: Code, out: &mut SmallVec<[u8; 4096]>) -> u8 {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
-        let len = code_iter;
+
+        let mut idx = 0;
+        let mut entry = &table[usize::from(code_iter)];
         while code_iter != 0 {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE
-            let entry = &table[usize::from(code_iter)];
-            code_iter = core::cmp::min(len, entry.prev);
+            entry = &table[usize::from(code_iter)];
+
+            code_iter = entry.prev;
             out.push(entry.byte);
+            idx += 1;
         }
-        out[0]
+        println!("buffered {idx} bytes");
+        entry.byte
     }
 }
 
@@ -601,14 +627,88 @@ mod tests {
         let mut base_decoder = WzlDecoder::new(BitOrder::Lsb, 8);
         let value = base_decoder.decode(&out_data).unwrap();
 
-        let mut array_vec = vec![5; encoded.len() + 1];
+        let mut array_vec = vec![0; encoded.len() + 1];
         let mut decoder = Decoder::new(8);
         let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);
         let status = result.status.unwrap();
 
         assert_eq!(status, LzwStatus::Done);
         assert_eq!(result.consumed_out, encoded.len());
+
+        for i in 0..value.len() {
+            if encoded[i] != array_vec[i] {
+                panic!(
+                    "first delta at {i}, observed value is {}, correct value is {}",
+                    array_vec[i], value[i]
+                );
+            }
+        }
+
         assert_eq!(value, array_vec[0..result.consumed_out]);
+        assert_eq!(value, encoded);
+        assert_eq!(array_vec[0..result.consumed_out], encoded);
+    }
+
+    fn buffered_test_body(encoded: Vec<u8>) {
+        let mut encoder = Encoder::new(BitOrder::Lsb, 8);
+        let out_data = encoder.encode(&encoded).unwrap();
+
+        //decode the data using weezl decoder, for sanity's sake
+        let mut base_decoder = WzlDecoder::new(BitOrder::Lsb, 8);
+        let value = base_decoder.decode(&out_data).unwrap();
+
+        let mut array_vec = vec![];
+        let mut holder_array = [0; 100];
+
+        let mut decoder = Decoder::new(8);
+        let mut in_idx = 0;
+        let mut out_index = 0;
+
+        loop {
+            let result = decoder.decode_bytes(&out_data[in_idx..], &mut holder_array[..]);
+            array_vec.extend_from_slice(&holder_array[0..result.consumed_out]);
+            in_idx += result.consumed_in;
+            out_index += result.consumed_out;
+            if out_index >= 1400 {
+                println!("out index is {out_index}");
+            }
+
+            if let LzwStatus::Done = result.status.unwrap() {
+                break;
+            }
+        }
+
+        //assert_eq!(status, LzwStatus::Done);
+        //assert_eq!(result.consumed_out, encoded.len());
+        assert_eq!(encoded.len(), array_vec.len());
+
+        println!(
+            "actual {:?}\ndecoded {:?}",
+            &encoded[1449..1459],
+            &array_vec[1449..1459]
+        );
+
+        let mut deltas: Vec<(usize, u8, u8)> = vec![];
+
+        for i in 0..value.len() {
+            if encoded[i] != array_vec[i] {
+                deltas.push((i, array_vec[i], value[i]));
+                //panic!(
+                //    "first delta at {i}, observed value is {}, correct value is {}",
+                //    array_vec[i], value[i]
+                //);
+            }
+        }
+        if !deltas.is_empty() {
+            for (idx, observed, real) in deltas {
+                println!("idx is {idx}; real is {real}; observed is {observed}");
+            }
+            panic!();
+        }
+
+        assert_eq!(value, array_vec);
+        assert_eq!(value, encoded);
+        assert_eq!(array_vec, encoded);
     }
 
     #[test]
@@ -628,8 +728,13 @@ mod tests {
     fn bmp_test() {
         //create data
         let encoded: Vec<u8> = bmp_data_to_vec();
-        let len = encoded.len();
-        println!("encoded len Is {len}");
         test_body(encoded);
+    }
+
+    #[test]
+    fn buffered_bmp_test() {
+        //create data
+        let encoded: Vec<u8> = bmp_data_to_vec();
+        buffered_test_body(encoded);
     }
 }

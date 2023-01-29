@@ -482,20 +482,19 @@ impl Buffer {
         } else {
             let mut code_iter = code;
             let table = &table.inner[..=usize::from(code)];
-            let mut idx = first_link.depth - 1;
+            let mut idx = first_link.depth;
 
             let mut entry = &table[usize::from(code_iter)];
 
-            while code_iter != 0 {
+            while idx != 0 {
                 //(code, cha) = self.table[k as usize];
                 // Note: This could possibly be replaced with an unchecked array access if
                 //  - value is asserted to be < self.next_code() in push
                 //  - min_size is asserted to be < MAX_CODESIZE
                 entry = &table[usize::from(code_iter)];
                 code_iter = entry.prev;
-
-                writer_buffer[idx as usize] = transformer(entry.byte);
                 idx = idx.saturating_sub(1);
+                writer_buffer[idx as usize] = transformer(entry.byte);
             }
             self.most_recent_byte = entry.byte;
             return &mut writer_buffer[first_link.depth as usize..];
@@ -555,8 +554,11 @@ impl Table {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
 
-        let mut idx = 0;
+        // poor mans do while; look i should probably do some optional magic here. dont care
         let mut entry = &table[usize::from(code_iter)];
+        code_iter = entry.prev;
+        out.push(entry.byte);
+
         while code_iter != 0 {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
@@ -566,9 +568,8 @@ impl Table {
 
             code_iter = entry.prev;
             out.push(entry.byte);
-            idx += 1;
         }
-        println!("buffered {idx} bytes");
+
         entry.byte
     }
 }
@@ -669,7 +670,7 @@ mod tests {
             array_vec.extend_from_slice(&holder_array[0..result.consumed_out]);
             in_idx += result.consumed_in;
             out_index += result.consumed_out;
-            if out_index >= 1400 {
+            if out_index >= 6400 {
                 println!("out index is {out_index}");
             }
 
@@ -684,8 +685,8 @@ mod tests {
 
         println!(
             "actual {:?}\ndecoded {:?}",
-            &encoded[1449..1459],
-            &array_vec[1449..1459]
+            &encoded[6488..6491],
+            &array_vec[6488..6491]
         );
 
         let mut deltas: Vec<(usize, u8, u8)> = vec![];

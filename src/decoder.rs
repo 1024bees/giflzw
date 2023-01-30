@@ -117,6 +117,28 @@ impl Decoder {
         self.state.advance(inp, out)
     }
 
+    /// Decode bytes from `inp`, pass each byte to `transformer` and write result to `out`.
+    ///
+    /// This will consume a prefix of the input buffer and write decoded output into a prefix of
+    /// the output buffer. See the respective fields of the return value for the count of consumed
+    /// and written bytes. For the next call You should have adjusted the inputs accordingly.
+    ///
+    /// The call will try to decode and write as many bytes of output as available. It will be
+    /// much more optimized (and avoid intermediate buffering) if it is allowed to write a large
+    /// contiguous chunk at once.
+    ///
+    /// See [`into_stream`] for high-level functions (that are only available with the `std`
+    /// feature).
+    ///
+    /// [`into_stream`]: #method.into_stream
+    pub fn decode_and_transform_bytes<T>(
+        &mut self,
+        inp: &[u8],
+        out: &mut [T],
+        transformer: fn(u8) -> T,
+    ) -> BufferResult {
+        self.state.advance_and_transform(inp, out, transformer)
+    }
     /// Check if the decoding has finished.
     ///
     /// No more output is produced beyond the end code that marked the finish of the stream. The
@@ -474,10 +496,9 @@ impl Buffer {
     ) -> &'outslice mut [T] {
         let first_link = table.at(code);
         if first_link.depth == u8::MAX || first_link.depth as usize > writer_buffer.len() {
-            println!("writter_buffer len is {}", writer_buffer.len());
             self.most_recent_byte = table.buffered_reconstruct(code, &mut self.bytes);
             let drained = self.drain_buffer_and_transform(writer_buffer, transformer) as usize;
-            println!("DRAINING {drained} elements!");
+
             return &mut writer_buffer[drained..];
         } else {
             let mut code_iter = code;
@@ -513,13 +534,6 @@ impl Table {
         let from = self.at(prev);
         let link = from.derive(byte, prev);
 
-        let new_depth = link.depth;
-        let new_code = self.inner.len();
-        //println!("create new depth of {new_depth} for code {new_code}");
-
-        if self.inner.len() == 619 {
-            println!("break");
-        }
         self.inner.push(link.clone());
         link
     }
@@ -628,7 +642,7 @@ mod tests {
         let mut base_decoder = WzlDecoder::new(BitOrder::Lsb, 8);
         let value = base_decoder.decode(&out_data).unwrap();
 
-        let mut array_vec = vec![0; encoded.len() + 1];
+        let mut array_vec = vec![5; encoded.len() + 1];
         let mut decoder = Decoder::new(8);
         let result = decoder.decode_bytes(&out_data[..], &mut array_vec[..]);
         let status = result.status.unwrap();

@@ -10,3 +10,4 @@ pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 pub(crate) type Code = u16;
 
 pub use decoder::Decoder;
+pub use error::{BufferResult, LzwError, LzwStatus};

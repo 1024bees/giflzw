@@ -4,6 +4,8 @@ use crate::{Code, MAX_CODESIZE, MAX_ENTRIES};
 use core::iter::zip;
 use smallvec::SmallVec;
 
+const BUFFER_SIZE: usize = 512;
+
 /// The state for decoding data with an LZW algorithm.
 ///
 /// The same structure can be utilized with streams as well as your own buffers and driver logic.
@@ -74,7 +76,7 @@ struct DecodeState {
 }
 
 struct Buffer {
-    bytes: SmallVec<[u8; 4096]>,
+    bytes: SmallVec<[u8; BUFFER_SIZE]>,
     most_recent_byte: u8,
 }
 
@@ -578,7 +580,7 @@ impl Table {
         self.inner.is_empty()
     }
 
-    fn buffered_reconstruct(&self, code: Code, out: &mut SmallVec<[u8; 4096]>) -> u8 {
+    fn buffered_reconstruct(&self, code: Code, out: &mut SmallVec<[u8; BUFFER_SIZE]>) -> u8 {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
 

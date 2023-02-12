@@ -476,7 +476,6 @@ impl Buffer {
     fn new() -> Self {
         Buffer {
             bytes: SmallVec::new(),
-
             most_recent_byte: 0,
         }
     }
@@ -495,6 +494,10 @@ impl Buffer {
             num_elems += 1;
         }
         self.bytes.truncate(self.bytes.len() - num_elems);
+        #[cfg(test)]
+        {
+            println!("Num elems drained is {}", num_elems);
+        }
         num_elems as u16
     }
 

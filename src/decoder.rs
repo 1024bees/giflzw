@@ -506,7 +506,7 @@ impl Buffer {
         writer_buffer: &'outslice mut [T],
     ) -> &'outslice mut [T] {
         let first_link = table.at(code);
-        if first_link.depth == u8::MAX || first_link.depth as usize > writer_buffer.len() {
+        if first_link.depth == u8::MAX || first_link.depth as usize >= writer_buffer.len() {
             self.most_recent_byte = table.buffered_reconstruct(code, &mut self.bytes);
             let drained = self.drain_buffer_and_transform(writer_buffer, transformer) as usize;
 

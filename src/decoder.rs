@@ -368,9 +368,20 @@ impl DecodeState {
 
         self.last = code;
 
+        let consumed_in = start_in_size - inp.len();
+        let consumed_out = start_out_size - out.len();
+
+        if consumed_out == 0 && consumed_in == 0 {
+            if let Ok(ref mut val) = status {
+                if *val == LzwStatus::Ok {
+                    *val = LzwStatus::NoProgress;
+                }
+            }
+        }
+
         return BufferResult {
-            consumed_in: start_in_size - inp.len(),
-            consumed_out: start_out_size - out.len(),
+            consumed_in,
+            consumed_out,
             status,
         };
     }

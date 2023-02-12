@@ -584,18 +584,19 @@ impl Table {
 
         // poor mans do while; look i should probably do some optional magic here. dont care
         let mut entry = &table[usize::from(code_iter)];
-        code_iter = entry.prev;
-        out.push(entry.byte);
 
-        while code_iter != 0 {
+        let mut depth = entry.depth;
+
+        while depth != 0 {
             //(code, cha) = self.table[k as usize];
-            // Note: This could possibly be replaced with an unchecked array access if
+            //Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE
             entry = &table[usize::from(code_iter)];
 
             code_iter = entry.prev;
             out.push(entry.byte);
+            depth = entry.depth - 1;
         }
 
         entry.byte
@@ -687,7 +688,7 @@ mod tests {
         let value = base_decoder.decode(&out_data).unwrap();
 
         let mut array_vec = vec![];
-        let mut holder_array = [0; 100];
+        let mut holder_array = [0; 96];
 
         let mut decoder = Decoder::new(8);
         let mut in_idx = 0;

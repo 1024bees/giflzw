@@ -1,6 +1,7 @@
 //! A module for all decoding needs.
 use crate::error::*;
 use crate::{Code, MAX_CODESIZE, MAX_ENTRIES};
+use arrayvec::ArrayVec;
 use core::iter::zip;
 use smallvec::SmallVec;
 
@@ -76,12 +77,12 @@ struct DecodeState {
 }
 
 struct Buffer {
-    bytes: SmallVec<[u8; BUFFER_SIZE]>,
+    bytes: ArrayVec<u8, BUFFER_SIZE>,
     most_recent_byte: u8,
 }
 
 struct Table {
-    inner: SmallVec<[Link; 4096]>,
+    inner: ArrayVec<Link, 4096>,
     //min_size: u8,
 }
 
@@ -477,7 +478,7 @@ impl CodeBuffer {
 impl Buffer {
     fn new() -> Self {
         Buffer {
-            bytes: SmallVec::new(),
+            bytes: ArrayVec::new(),
             most_recent_byte: 0,
         }
     }
@@ -496,10 +497,6 @@ impl Buffer {
             num_elems += 1;
         }
         self.bytes.truncate(self.bytes.len() - num_elems);
-        #[cfg(test)]
-        {
-            println!("Num elems drained is {}", num_elems);
-        }
         num_elems as u16
     }
 
@@ -518,19 +515,19 @@ impl Buffer {
             return &mut writer_buffer[drained..];
         } else {
             let mut code_iter = code;
-            let table = &table.inner[..=usize::from(code)];
+
             let mut idx = first_link.depth;
 
-            let mut entry = &table[usize::from(code_iter)];
+            let mut entry = &table.inner[usize::from(code_iter)];
 
             while idx != 0 {
                 //(code, cha) = self.table[k as usize];
                 // Note: This could possibly be replaced with an unchecked array access if
                 //  - value is asserted to be < self.next_code() in push
                 //  - min_size is asserted to be < MAX_CODESIZE
-                entry = &table[usize::from(code_iter)];
+                entry = &table.inner[usize::from(code_iter)];
                 code_iter = entry.prev;
-                idx = idx.saturating_sub(1);
+                idx = idx - 1;
                 writer_buffer[idx as usize] = transformer(entry.byte);
             }
             self.most_recent_byte = entry.byte;
@@ -542,7 +539,7 @@ impl Buffer {
 impl Table {
     fn new(_min_size: u8) -> Self {
         Table {
-            inner: SmallVec::with_capacity(MAX_ENTRIES),
+            inner: ArrayVec::new(),
         }
     }
 
@@ -580,7 +577,8 @@ impl Table {
         self.inner.is_empty()
     }
 
-    fn buffered_reconstruct(&self, code: Code, out: &mut SmallVec<[u8; BUFFER_SIZE]>) -> u8 {
+    #[cold]
+    fn buffered_reconstruct(&self, code: Code, out: &mut ArrayVec<u8, BUFFER_SIZE>) -> u8 {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
 
@@ -768,5 +766,32 @@ mod tests {
         //create data
         let encoded: Vec<u8> = bmp_data_to_vec();
         buffered_test_body(encoded);
+    }
+
+    fn weezl_encode(encoded: Vec<u8>, holder_slice: &mut [u8]) {
+        let mut decoder = WzlDecoder::new(BitOrder::Lsb, 8);
+        let mut in_idx = 0;
+
+        loop {
+            let result = decoder.decode_bytes(&encoded[in_idx..], holder_slice);
+            std::hint::black_box(&holder_slice);
+            in_idx += result.consumed_in;
+
+            if let weezl::LzwStatus::Done = result.status.unwrap() {
+                break;
+            }
+        }
+        assert_eq!(in_idx, encoded.len());
+    }
+    fn encode_data(data: Vec<u8>) -> Vec<u8> {
+        let mut encoder = Encoder::new(BitOrder::Lsb, 8);
+        let out_data = encoder.encode(&data).unwrap();
+        out_data
+    }
+    #[test]
+    fn weezl_encode_sanity() {
+        let data = encode_data(bmp_data_to_vec());
+        let mut slice = vec![0; 100];
+        weezl_encode(data, slice.as_mut_slice());
     }
 }

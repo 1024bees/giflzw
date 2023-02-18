@@ -8,9 +8,18 @@ edition = "2021"
 
 [dependencies]
 smallvec = "1.10.0"
+arrayvec = "0.7.2"
+
+
+[[bench]]
+name = "comparison"
+harness = false
 
 
 [dev-dependencies]
 weezl = "0.1.7"
 tinybmp = "0.3.3"
 embedded-graphics = "0.7"
+criterion = "0.3.5"
+pprof = { version = "0.11", features = ["flamegraph"] }
+

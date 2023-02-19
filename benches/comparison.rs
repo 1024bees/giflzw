@@ -113,27 +113,27 @@ fn bench(c: &mut Criterion) {
         b.iter(|| gif_test_body(data_slice, holder.as_mut_slice()))
     });
 
-    let mut group = c.benchmark_group("Bitmaps");
+    //let mut group = c.benchmark_group("Bitmaps");
 
-    for i in [500] {
-        group.bench_with_input(
-            BenchmarkId::new("Weezl", format!("{} byte buffer", i)),
-            &i,
-            |b, i| {
-                let mut holder = vec![0; *i];
-                b.iter(|| weezl_encode(data_slice, holder.as_mut_slice()))
-            },
-        );
+    //for i in [500] {
+    //    group.bench_with_input(
+    //        BenchmarkId::new("Weezl", format!("{} byte buffer", i)),
+    //        &i,
+    //        |b, i| {
+    //            let mut holder = vec![0; *i];
+    //            b.iter(|| weezl_encode(data_slice, holder.as_mut_slice()))
+    //        },
+    //    );
 
-        group.bench_with_input(
-            BenchmarkId::new("Giflzw", format!("{} byte buffer", i)),
-            &i,
-            |b, i| {
-                let mut holder = vec![0; *i];
-                b.iter(|| gif_test_body(data_slice, holder.as_mut_slice()))
-            },
-        );
-    }
+    //    group.bench_with_input(
+    //        BenchmarkId::new("Giflzw", format!("{} byte buffer", i)),
+    //        &i,
+    //        |b, i| {
+    //            let mut holder = vec![0; *i];
+    //            b.iter(|| gif_test_body(data_slice, holder.as_mut_slice()))
+    //        },
+    //    );
+    //}
 }
 
 criterion_group!(name = benches; config = Criterion::default().with_profiler(perf::FlamegraphProfiler::new(10000)); targets = bench);

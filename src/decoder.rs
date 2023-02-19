@@ -82,7 +82,7 @@ struct Buffer {
 }
 
 struct Table {
-    inner: ArrayVec<Link, 4096>,
+    inner: SmallVec<[Link; 512]>,
     //min_size: u8,
 }
 
@@ -306,6 +306,7 @@ impl DecodeState {
         }
 
         while let Some(next_code) = self.code_buffer.next_symbol(&mut inp) {
+            
             let prev_code = code.take().unwrap();
             // Reconstruct the first code in the buffer.
 
@@ -500,6 +501,7 @@ impl Buffer {
         num_elems as u16
     }
 
+    #[inline]
     fn fill_reconstruct_and_transform<'outslice, T>(
         &mut self,
         table: &Table,
@@ -518,17 +520,20 @@ impl Buffer {
 
             let mut idx = first_link.depth;
 
-            let mut entry = &table.inner[usize::from(code_iter)];
+            let mut entry = table.at(code_iter);
 
             while idx != 0 {
                 //(code, cha) = self.table[k as usize];
                 // Note: This could possibly be replaced with an unchecked array access if
                 //  - value is asserted to be < self.next_code() in push
                 //  - min_size is asserted to be < MAX_CODESIZE
-                entry = &table.inner[usize::from(code_iter)];
+
+                entry = table.at(code_iter);
                 code_iter = entry.prev;
                 idx = idx - 1;
-                writer_buffer[idx as usize] = transformer(entry.byte);
+                unsafe {
+                    *writer_buffer.get_unchecked_mut(idx as usize) = transformer(entry.byte);
+                }
             }
             self.most_recent_byte = entry.byte;
             return &mut writer_buffer[first_link.depth as usize..];
@@ -539,7 +544,7 @@ impl Buffer {
 impl Table {
     fn new(_min_size: u8) -> Self {
         Table {
-            inner: ArrayVec::new(),
+            inner: SmallVec::new(),
         }
     }
 
@@ -569,8 +574,9 @@ impl Table {
         self.inner.push(Link::base(0));
     }
 
+    #[inline]
     fn at(&self, code: Code) -> &Link {
-        &self.inner[usize::from(code)]
+        unsafe { self.inner.get_unchecked(usize::from(code)) }
     }
 
     fn is_empty(&self) -> bool {

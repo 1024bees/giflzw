@@ -68,8 +68,6 @@ struct DecodeState {
     end_code: Code,
     /// A stored flag if the end code has already appeared.
     has_ended: bool,
-    /// If tiff then bumps are a single code sooner.
-    is_tiff: bool,
     /// Do we allow stream to start without an explicit reset code?
     implicit_reset: bool,
     /// The buffer for decoded words.
@@ -185,7 +183,7 @@ impl DecodeState {
             end_code: (1 << min_size) + 1,
             next_code: (1 << min_size) + 2,
             has_ended: false,
-            is_tiff: false,
+
             implicit_reset: true,
             code_buffer: CodeBuffer::new(min_size),
         }
@@ -305,64 +303,79 @@ impl DecodeState {
             }
         }
 
+        let batched: ArrayVec<Code, 5> = ArrayVec::new();
         while let Some(next_code) = self.code_buffer.next_symbol(&mut inp) {
-            
             let prev_code = code.take().unwrap();
             // Reconstruct the first code in the buffer.
+            //
+            if next_code > self.end_code && next_code < self.next_code
+                || next_code < self.clear_code
+            {
+                out = self.buffer.fill_reconstruct_and_transform(
+                    &self.table,
+                    next_code,
+                    transformer,
+                    out,
+                );
 
-            match next_code {
-                endcode if endcode == self.end_code => {
-                    self.has_ended = true;
-                    status = Ok(LzwStatus::Done);
-                    break;
-                }
-                resetcode if resetcode == self.clear_code => {
-                    self.reset_tables();
+                self.table.derive(self.buffer.most_recent_byte, prev_code);
+                self.next_code += 1;
+                code = Some(next_code);
+            } else {
+                match next_code {
+                    endcode if endcode == self.end_code => {
+                        self.has_ended = true;
+                        status = Ok(LzwStatus::Done);
+                        break;
+                    }
+                    resetcode if resetcode == self.clear_code => {
+                        self.reset_tables();
 
-                    let first_symbol = self.code_buffer.next_symbol(&mut inp).unwrap();
-                    out = self.buffer.fill_reconstruct_and_transform(
-                        &self.table,
-                        first_symbol,
-                        transformer,
-                        out,
-                    );
-
-                    code = Some(first_symbol);
-                }
-                seen_code => {
-                    if seen_code < self.next_code {
+                        let first_symbol = self.code_buffer.next_symbol(&mut inp).unwrap();
                         out = self.buffer.fill_reconstruct_and_transform(
                             &self.table,
-                            next_code,
+                            first_symbol,
                             transformer,
                             out,
                         );
 
-                        self.table.derive(self.buffer.most_recent_byte, prev_code);
-                        self.next_code += 1;
-                    } else if seen_code == self.next_code {
-                        self.table.derive(self.buffer.most_recent_byte, prev_code);
-
-                        out = self.buffer.fill_reconstruct_and_transform(
-                            &self.table,
-                            next_code,
-                            transformer,
-                            out,
-                        );
-
-                        self.next_code += 1;
-                    } else {
-                        todo!("Invalid code; TODO; handle this elegantly");
+                        code = Some(first_symbol);
                     }
+                    seen_code => {
+                        if seen_code < self.next_code {
+                            out = self.buffer.fill_reconstruct_and_transform(
+                                &self.table,
+                                next_code,
+                                transformer,
+                                out,
+                            );
 
-                    if self.next_code > (self.code_buffer.max_code()) - Code::from(self.is_tiff)
-                        && self.code_buffer.code_size() < MAX_CODESIZE
-                    {
-                        self.bump_code_size();
+                            self.table.derive(self.buffer.most_recent_byte, prev_code);
+                            self.next_code += 1;
+                        } else if seen_code == self.next_code {
+                            self.table.derive(self.buffer.most_recent_byte, prev_code);
+
+                            out = self.buffer.fill_reconstruct_and_transform(
+                                &self.table,
+                                next_code,
+                                transformer,
+                                out,
+                            );
+
+                            self.next_code += 1;
+                        } else {
+                            todo!("Invalid code; TODO; handle this elegantly");
+                        }
+
+                        code = Some(next_code);
                     }
-
-                    code = Some(next_code);
                 }
+            }
+
+            if self.next_code > (self.code_buffer.max_code())
+                && self.code_buffer.code_size() < MAX_CODESIZE
+            {
+                self.bump_code_size();
             }
 
             if out.is_empty() {

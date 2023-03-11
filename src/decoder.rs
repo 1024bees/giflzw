@@ -210,6 +210,9 @@ impl DecodeState {
 
     fn restart(&mut self) {
         self.has_ended = false;
+        self.clear_code = 1 << self.min_size;
+        self.end_code = (1 << self.min_size) + 1;
+        self.next_code = (1 << self.min_size) + 2;
     }
 
     fn reset(&mut self) {

@@ -1,7 +1,7 @@
 //! A module for all decoding needs.
 use crate::error::*;
-use crate::{Code, MAX_CODESIZE, MAX_ENTRIES};
-use arrayvec::ArrayVec;
+use crate::{Code, MAX_CODESIZE};
+
 use core::iter::zip;
 use smallvec::SmallVec;
 
@@ -75,7 +75,7 @@ struct DecodeState {
 }
 
 struct Buffer {
-    bytes: ArrayVec<u8, BUFFER_SIZE>,
+    bytes: SmallVec<[u8; BUFFER_SIZE]>,
     most_recent_byte: u8,
 }
 
@@ -303,7 +303,7 @@ impl DecodeState {
             }
         }
 
-        let batched: ArrayVec<Code, 5> = ArrayVec::new();
+        let _batched: SmallVec<[Code; 5]> = SmallVec::new();
         while let Some(next_code) = self.code_buffer.next_symbol(&mut inp) {
             let prev_code = code.take().unwrap();
             // Reconstruct the first code in the buffer.
@@ -492,7 +492,7 @@ impl CodeBuffer {
 impl Buffer {
     fn new() -> Self {
         Buffer {
-            bytes: ArrayVec::new(),
+            bytes: SmallVec::new(),
             most_recent_byte: 0,
         }
     }
@@ -597,7 +597,7 @@ impl Table {
     }
 
     #[cold]
-    fn buffered_reconstruct(&self, code: Code, out: &mut ArrayVec<u8, BUFFER_SIZE>) -> u8 {
+    fn buffered_reconstruct(&self, code: Code, out: &mut SmallVec<[u8; BUFFER_SIZE]>) -> u8 {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
 

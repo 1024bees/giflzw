@@ -167,7 +167,8 @@ impl Decoder {
     /// This produce a decoder as if just constructed with `new` but taking slightly less work. In
     /// particular it will not deallocate any internal allocations. It will also avoid some
     /// duplicate setup work.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, code_size: u8) {
+        self.state.min_size = code_size;
         self.state.reset();
     }
 }
